@@ -1,28 +1,18 @@
-import { getStore } from "@netlify/blobs";
-import type { Context } from "@netlify/functions";
+import { neon } from "@netlify/neon";
 
 interface Rating {
   id: string;
+  survey_id: string;
   score: number;
   timestamp: number;
 }
 
-const STORE_NAME = "pizza-ratings";
-const RATINGS_KEY = "all-ratings";
 const MAX_RATINGS = 100;
 
-async function getRatings(context: Context): Promise<Rating[]> {
-  const store = getStore({ name: STORE_NAME, siteID: context.site.id, token: process.env.NETLIFY_API_TOKEN });
-  const data = await store.get(RATINGS_KEY, { type: "json" });
-  return (data as Rating[]) || [];
-}
+export default async (request: Request) => {
+  const sql = neon();
+  const url = new URL(request.url);
 
-async function saveRatings(context: Context, ratings: Rating[]): Promise<void> {
-  const store = getStore({ name: STORE_NAME, siteID: context.site.id, token: process.env.NETLIFY_API_TOKEN });
-  await store.setJSON(RATINGS_KEY, ratings);
-}
-
-export default async (request: Request, context: Context) => {
   const headers = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
@@ -30,20 +20,43 @@ export default async (request: Request, context: Context) => {
     "Access-Control-Allow-Headers": "Content-Type",
   };
 
-  // Handle CORS preflight
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers });
   }
 
   try {
     if (request.method === "GET") {
-      const ratings = await getRatings(context);
+      const surveyId = url.searchParams.get("surveyId");
+
+      if (!surveyId) {
+        return new Response(
+          JSON.stringify({ error: "surveyId query parameter is required" }),
+          { status: 400, headers }
+        );
+      }
+
+      const ratings = await sql`
+        SELECT id, survey_id, score, timestamp
+        FROM ratings
+        WHERE survey_id = ${surveyId}::uuid
+        ORDER BY timestamp DESC
+        LIMIT ${MAX_RATINGS}
+      ` as Rating[];
+
       return new Response(JSON.stringify(ratings), { status: 200, headers });
     }
 
     if (request.method === "POST") {
       const body = await request.json();
       const score = Number(body.score);
+      const surveyId = body.surveyId;
+
+      if (!surveyId) {
+        return new Response(
+          JSON.stringify({ error: "surveyId is required" }),
+          { status: 400, headers }
+        );
+      }
 
       if (isNaN(score) || score < 1 || score > 10) {
         return new Response(
@@ -52,15 +65,13 @@ export default async (request: Request, context: Context) => {
         );
       }
 
-      const newRating: Rating = {
-        id: crypto.randomUUID(),
-        score,
-        timestamp: Date.now(),
-      };
+      const timestamp = Date.now();
 
-      const ratings = await getRatings(context);
-      ratings.unshift(newRating);
-      await saveRatings(context, ratings.slice(0, MAX_RATINGS));
+      const [newRating] = await sql`
+        INSERT INTO ratings (survey_id, score, timestamp)
+        VALUES (${surveyId}::uuid, ${score}, ${timestamp})
+        RETURNING id, survey_id, score, timestamp
+      ` as Rating[];
 
       return new Response(JSON.stringify(newRating), { status: 201, headers });
     }

@@ -1,44 +1,48 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router";
 import type { Route } from "./+types/home";
 
 export function meta({}: Route.MetaArgs) {
   return [
-    { title: "Slice Score - Rate Your Pizza" },
-    { name: "description", content: "Rate the taste of your pizza from 1 to 10" },
+    { title: "Slice Score - Опросы" },
+    { name: "description", content: "Создавайте опросы и оценивайте вкус пиццы" },
   ];
 }
 
-interface Rating {
+interface Survey {
   id: string;
-  score: number;
-  timestamp: number;
+  description: string;
+  created_at: string;
+  rating_count: number;
+  average_score: number | null;
 }
 
-const API_URL = "/api/ratings";
-
-async function fetchRatings(): Promise<Rating[]> {
-  const response = await fetch(API_URL);
-  if (!response.ok) throw new Error("Failed to fetch ratings");
+async function fetchSurveys(): Promise<Survey[]> {
+  const response = await fetch("/api/surveys");
+  if (!response.ok) throw new Error("Failed to fetch surveys");
   return response.json();
 }
 
-async function postRating(score: number): Promise<Rating> {
-  const response = await fetch(API_URL, {
+async function createSurvey(description: string): Promise<Survey> {
+  const response = await fetch("/api/surveys", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ score }),
+    body: JSON.stringify({ description }),
   });
-  if (!response.ok) throw new Error("Failed to save rating");
+  if (!response.ok) throw new Error("Failed to create survey");
   return response.json();
 }
 
-function getAverageScore(ratings: Rating[]): number {
-  if (ratings.length === 0) return 0;
-  const sum = ratings.reduce((acc, r) => acc + r.score, 0);
-  return sum / ratings.length;
+function formatDate(dateString: string): string {
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(dateString));
 }
 
-function getScoreEmoji(score: number): string {
+function getScoreEmoji(score: number | null): string {
+  if (score === null) return "🍕";
   if (score <= 2) return "😞";
   if (score <= 4) return "😐";
   if (score <= 6) return "🙂";
@@ -46,46 +50,38 @@ function getScoreEmoji(score: number): string {
   return "🤤";
 }
 
-function formatDate(timestamp: number): string {
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(timestamp));
-}
-
 export default function Home() {
-  const [score, setScore] = useState(5);
-  const [ratings, setRatings] = useState<Rating[]>([]);
-  const [showSuccess, setShowSuccess] = useState(false);
+  const [surveys, setSurveys] = useState<Survey[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [newDescription, setNewDescription] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
 
   useEffect(() => {
-    fetchRatings()
-      .then(setRatings)
+    fetchSurveys()
+      .then(setSurveys)
       .catch((err) => setError(err.message))
       .finally(() => setIsLoading(false));
   }, []);
 
-  const handleRate = async () => {
-    setIsSaving(true);
+  const handleCreateSurvey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDescription.trim()) return;
+
+    setIsCreating(true);
     setError(null);
     try {
-      const newRating = await postRating(score);
-      setRatings((prev) => [newRating, ...prev].slice(0, 100));
-      setShowSuccess(true);
-      setTimeout(() => setShowSuccess(false), 2000);
+      const survey = await createSurvey(newDescription.trim());
+      setSurveys((prev) => [survey, ...prev]);
+      setNewDescription("");
+      setShowModal(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      setError(err instanceof Error ? err.message : "Failed to create survey");
     } finally {
-      setIsSaving(false);
+      setIsCreating(false);
     }
   };
-
-  const averageScore = getAverageScore(ratings);
 
   return (
     <main className="min-h-dvh px-4 py-8 flex flex-col items-center">
@@ -96,7 +92,7 @@ export default function Home() {
           <h1 className="text-3xl font-bold text-orange-600 tracking-tight">
             Slice Score
           </h1>
-          <p className="text-orange-800/60 mt-1">Оцени вкус пиццы</p>
+          <p className="text-orange-800/60 mt-1">Опросы вкуса пиццы</p>
         </header>
 
         {/* Error */}
@@ -106,41 +102,13 @@ export default function Home() {
           </div>
         )}
 
-        {/* Rating Card */}
-        <div className="bg-white rounded-3xl shadow-lg p-6 mb-6">
-          {/* Score Display */}
-          <div className="text-center mb-6">
-            <div className="text-6xl mb-2">{getScoreEmoji(score)}</div>
-            <div className="text-5xl font-bold text-orange-500">{score}</div>
-            <div className="text-orange-800/40 text-sm">из 10</div>
-          </div>
-
-          {/* Slider */}
-          <div className="mb-6">
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={score}
-              onChange={(e) => setScore(Number(e.target.value))}
-              className="w-full h-2"
-            />
-            <div className="flex justify-between text-xs text-orange-800/40 mt-2">
-              <span>1</span>
-              <span>5</span>
-              <span>10</span>
-            </div>
-          </div>
-
-          {/* Rate Button */}
-          <button
-            onClick={handleRate}
-            disabled={isSaving}
-            className="w-full py-4 bg-gradient-to-r from-orange-500 to-red-500 text-white font-semibold rounded-2xl text-lg shadow-md hover:shadow-lg active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {showSuccess ? "Оценка сохранена!" : isSaving ? "Сохранение..." : "Оценить"}
-          </button>
-        </div>
+        {/* Create Survey Button */}
+        <button
+          onClick={() => setShowModal(true)}
+          className="w-full py-4 bg-gradient-to-r from-orange-500 to-red-500 text-white font-semibold rounded-2xl text-lg shadow-md hover:shadow-lg active:scale-[0.98] transition-all mb-6"
+        >
+          Создать опрос
+        </button>
 
         {/* Loading */}
         {isLoading && (
@@ -149,49 +117,89 @@ export default function Home() {
           </div>
         )}
 
-        {/* Stats */}
-        {!isLoading && ratings.length > 0 && (
-          <div className="bg-white/60 backdrop-blur rounded-2xl p-4 mb-6">
-            <div className="flex justify-between items-center">
-              <div>
-                <div className="text-orange-800/40 text-xs">Средняя оценка</div>
-                <div className="text-2xl font-bold text-orange-600">
-                  {averageScore.toFixed(1)}
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-orange-800/40 text-xs">Всего оценок</div>
-                <div className="text-2xl font-bold text-orange-600">
-                  {ratings.length}
-                </div>
-              </div>
-            </div>
+        {/* Empty state */}
+        {!isLoading && surveys.length === 0 && (
+          <div className="text-center text-orange-800/60 py-8 bg-white/60 backdrop-blur rounded-2xl">
+            Пока нет опросов. Создайте первый!
           </div>
         )}
 
-        {/* History */}
-        {!isLoading && ratings.length > 0 && (
-          <div className="bg-white/60 backdrop-blur rounded-2xl p-4">
-            <h2 className="text-sm font-medium text-orange-800/60 mb-3">
-              История оценок
-            </h2>
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {ratings.slice(0, 10).map((rating) => (
-                <div
-                  key={rating.id}
-                  className="flex items-center justify-between py-2 border-b border-orange-100 last:border-0"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">{getScoreEmoji(rating.score)}</span>
-                    <span className="font-semibold text-orange-700">
-                      {rating.score}/10
-                    </span>
+        {/* Surveys List */}
+        {!isLoading && surveys.length > 0 && (
+          <div className="space-y-3">
+            {surveys.map((survey) => (
+              <Link
+                key={survey.id}
+                to={`/survey/${survey.id}`}
+                className="block bg-white rounded-2xl shadow-md p-4 hover:shadow-lg transition-shadow"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="text-3xl">{getScoreEmoji(survey.average_score)}</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-orange-800 font-medium truncate">
+                      {survey.description}
+                    </p>
+                    <p className="text-orange-800/40 text-xs mt-1">
+                      {formatDate(survey.created_at)}
+                    </p>
                   </div>
-                  <span className="text-xs text-orange-800/40">
-                    {formatDate(rating.timestamp)}
-                  </span>
+                  <div className="text-right shrink-0">
+                    {survey.average_score !== null ? (
+                      <>
+                        <div className="text-xl font-bold text-orange-600">
+                          {survey.average_score.toFixed(1)}
+                        </div>
+                        <div className="text-orange-800/40 text-xs">
+                          {survey.rating_count} оц.
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-orange-800/40 text-xs">
+                        Нет оценок
+                      </div>
+                    )}
+                  </div>
                 </div>
-              ))}
+              </Link>
+            ))}
+          </div>
+        )}
+
+        {/* Create Survey Modal */}
+        {showModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-xl">
+              <h2 className="text-xl font-bold text-orange-600 mb-4">
+                Новый опрос
+              </h2>
+              <form onSubmit={handleCreateSurvey}>
+                <textarea
+                  value={newDescription}
+                  onChange={(e) => setNewDescription(e.target.value)}
+                  placeholder="Описание (рецепт, заметка...)"
+                  className="w-full p-4 border border-orange-200 rounded-2xl resize-none h-32 focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  autoFocus
+                />
+                <div className="flex gap-3 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowModal(false);
+                      setNewDescription("");
+                    }}
+                    className="flex-1 py-3 border border-orange-300 text-orange-600 font-semibold rounded-2xl hover:bg-orange-50 transition-colors"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isCreating || !newDescription.trim()}
+                    className="flex-1 py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white font-semibold rounded-2xl disabled:opacity-50"
+                  >
+                    {isCreating ? "Создание..." : "Создать"}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}
