@@ -13,7 +13,7 @@ npm install
 npm run dev
 ```
 
-Приложение будет доступно по адресу `http://localhost:5173`.
+Приложение будет доступно по адресу `https://pizza-taste-meter.netlify.app/`.
 
 ## Технологии
 
