@@ -1,8 +1,16 @@
 import { neon } from "@netlify/neon";
+import { extractUser, requireAuth } from "./lib/auth";
 
 interface Rating {
   id: string;
   survey_id: string;
+  score: number;
+  timestamp: number;
+  user_id: string | null;
+}
+
+interface MyRating {
+  id: string;
   score: number;
   timestamp: number;
 }
@@ -17,7 +25,7 @@ export default async (request: Request) => {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };
 
   if (request.method === "OPTIONS") {
@@ -25,6 +33,39 @@ export default async (request: Request) => {
   }
 
   try {
+    // GET /api/ratings/my?surveyId=xxx - get my rating for a survey
+    if (request.method === "GET" && url.pathname.endsWith("/my")) {
+      const surveyId = url.searchParams.get("surveyId");
+
+      if (!surveyId) {
+        return new Response(
+          JSON.stringify({ error: "surveyId query parameter is required" }),
+          { status: 400, headers }
+        );
+      }
+
+      const auth = await extractUser(request);
+
+      if (!auth.user || !auth.dbUser) {
+        return new Response(
+          JSON.stringify({ rating: null }),
+          { status: 200, headers }
+        );
+      }
+
+      const [myRating] = await sql`
+        SELECT id, score, timestamp
+        FROM ratings
+        WHERE survey_id = ${surveyId}::uuid AND user_id = ${auth.dbUser.id}::uuid
+      ` as MyRating[];
+
+      return new Response(
+        JSON.stringify({ rating: myRating || null }),
+        { status: 200, headers }
+      );
+    }
+
+    // GET /api/ratings?surveyId=xxx - get all ratings for a survey (public)
     if (request.method === "GET") {
       const surveyId = url.searchParams.get("surveyId");
 
@@ -46,7 +87,11 @@ export default async (request: Request) => {
       return new Response(JSON.stringify(ratings), { status: 200, headers });
     }
 
+    // POST /api/ratings - create or update rating (authenticated users only)
     if (request.method === "POST") {
+      const { auth, errorResponse } = await requireAuth(request);
+      if (errorResponse) return errorResponse;
+
       const body = await request.json();
       const score = Number(body.score);
       const surveyId = body.surveyId;
@@ -66,14 +111,18 @@ export default async (request: Request) => {
       }
 
       const timestamp = Date.now();
+      const userId = auth.dbUser!.id;
 
-      const [newRating] = await sql`
-        INSERT INTO ratings (survey_id, score, timestamp)
-        VALUES (${surveyId}::uuid, ${score}, ${timestamp})
-        RETURNING id, survey_id, score, timestamp
+      // UPSERT: insert or update if user already rated this survey
+      const [rating] = await sql`
+        INSERT INTO ratings (survey_id, score, timestamp, user_id)
+        VALUES (${surveyId}::uuid, ${score}, ${timestamp}, ${userId}::uuid)
+        ON CONFLICT (user_id, survey_id) WHERE user_id IS NOT NULL
+        DO UPDATE SET score = ${score}, timestamp = ${timestamp}
+        RETURNING id, survey_id, score, timestamp, user_id
       ` as Rating[];
 
-      return new Response(JSON.stringify(newRating), { status: 201, headers });
+      return new Response(JSON.stringify(rating), { status: 201, headers });
     }
 
     return new Response(
@@ -90,5 +139,5 @@ export default async (request: Request) => {
 };
 
 export const config = {
-  path: "/api/ratings",
+  path: ["/api/ratings", "/api/ratings/my"],
 };

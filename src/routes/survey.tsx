@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router";
 import type { Route } from "./+types/survey";
+import { useAuth } from "~/contexts/AuthContext";
+import { authFetch } from "~/lib/auth";
 
 export function meta({ data }: Route.MetaArgs) {
   return [
@@ -24,6 +26,12 @@ interface Rating {
   timestamp: number;
 }
 
+interface MyRating {
+  id: string;
+  score: number;
+  timestamp: number;
+}
+
 async function fetchSurvey(id: string): Promise<Survey> {
   const response = await fetch(`/api/surveys/${id}`);
   if (!response.ok) throw new Error("Failed to fetch survey");
@@ -36,13 +44,23 @@ async function fetchRatings(surveyId: string): Promise<Rating[]> {
   return response.json();
 }
 
+async function fetchMyRating(surveyId: string): Promise<MyRating | null> {
+  const response = await authFetch(`/api/ratings/my?surveyId=${surveyId}`);
+  if (!response.ok) throw new Error("Failed to fetch my rating");
+  const data = await response.json();
+  return data.rating;
+}
+
 async function postRating(surveyId: string, score: number): Promise<Rating> {
-  const response = await fetch("/api/ratings", {
+  const response = await authFetch("/api/ratings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ surveyId, score }),
   });
-  if (!response.ok) throw new Error("Failed to save rating");
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || "Failed to save rating");
+  }
   return response.json();
 }
 
@@ -71,14 +89,18 @@ function formatDate(timestamp: number | string): string {
 
 export default function SurveyPage() {
   const { id } = useParams();
+  const { isAuthenticated, login, user } = useAuth();
+
   const [survey, setSurvey] = useState<Survey | null>(null);
   const [score, setScore] = useState(5);
   const [ratings, setRatings] = useState<Rating[]>([]);
+  const [myRating, setMyRating] = useState<MyRating | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Fetch survey and ratings
   useEffect(() => {
     if (!id) return;
 
@@ -91,13 +113,50 @@ export default function SurveyPage() {
       .finally(() => setIsLoading(false));
   }, [id]);
 
+  // Fetch user's own rating when authenticated
+  useEffect(() => {
+    if (!id || !isAuthenticated) {
+      setMyRating(null);
+      return;
+    }
+
+    fetchMyRating(id)
+      .then((rating) => {
+        setMyRating(rating);
+        if (rating) {
+          setScore(rating.score);
+        }
+      })
+      .catch((err) => console.error("Failed to fetch my rating:", err));
+  }, [id, isAuthenticated, user]);
+
   const handleRate = async () => {
     if (!id) return;
+
+    if (!isAuthenticated) {
+      login();
+      return;
+    }
+
     setIsSaving(true);
     setError(null);
     try {
       const newRating = await postRating(id, score);
-      setRatings((prev) => [newRating, ...prev].slice(0, 100));
+
+      // Update my rating
+      setMyRating({ id: newRating.id, score: newRating.score, timestamp: newRating.timestamp });
+
+      // Update ratings list
+      if (myRating) {
+        // User already had a rating, update it in the list
+        setRatings((prev) =>
+          prev.map((r) => (r.id === newRating.id ? newRating : r))
+        );
+      } else {
+        // New rating, add to beginning
+        setRatings((prev) => [newRating, ...prev].slice(0, 100));
+      }
+
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 2000);
     } catch (err) {
@@ -108,6 +167,14 @@ export default function SurveyPage() {
   };
 
   const averageScore = getAverageScore(ratings);
+
+  const getButtonText = () => {
+    if (showSuccess) return "Оценка сохранена!";
+    if (isSaving) return "Сохранение...";
+    if (!isAuthenticated) return "Войти, чтобы оценить";
+    if (myRating) return "Изменить оценку";
+    return "Оценить";
+  };
 
   if (isLoading) {
     return (
@@ -164,6 +231,14 @@ export default function SurveyPage() {
           </div>
         )}
 
+        {/* User's Rating Display */}
+        {isAuthenticated && myRating && (
+          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-2xl mb-6 flex items-center justify-between">
+            <span>Ваша оценка:</span>
+            <span className="font-bold text-lg">{myRating.score}/10 {getScoreEmoji(myRating.score)}</span>
+          </div>
+        )}
+
         {/* Rating Card */}
         <div className="bg-white rounded-3xl shadow-lg p-6 mb-6">
           {/* Score Display */}
@@ -182,6 +257,7 @@ export default function SurveyPage() {
               value={score}
               onChange={(e) => setScore(Number(e.target.value))}
               className="w-full h-2"
+              disabled={!isAuthenticated}
             />
             <div className="flex justify-between text-xs text-orange-800/40 mt-2">
               <span>1</span>
@@ -196,7 +272,7 @@ export default function SurveyPage() {
             disabled={isSaving}
             className="w-full py-4 bg-gradient-to-r from-orange-500 to-red-500 text-white font-semibold rounded-2xl text-lg shadow-md hover:shadow-lg active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {showSuccess ? "Оценка сохранена!" : isSaving ? "Сохранение..." : "Оценить"}
+            {getButtonText()}
           </button>
         </div>
 
