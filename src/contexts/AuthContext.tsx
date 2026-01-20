@@ -1,13 +1,19 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import {
-  initAuth,
   login as authLogin,
+  signup as authSignup,
   logout as authLogout,
   getCurrentUser,
-  onAuthChange,
   authFetch,
-  type NetlifyUser,
+  requestPasswordRecovery,
+  recoverWithToken,
+  updatePassword,
+  confirmEmail,
+  parseAuthHash,
+  clearAuthHash,
+  type GoTrueUser,
 } from "~/lib/auth";
+import { AuthModal, type AuthMode } from "~/components/AuthModal";
 
 interface DbUser {
   id: string;
@@ -16,7 +22,7 @@ interface DbUser {
 }
 
 interface AuthContextType {
-  user: NetlifyUser | null;
+  user: GoTrueUser | null;
   dbUser: DbUser | null;
   isLoading: boolean;
   isAuthenticated: boolean;
@@ -28,9 +34,12 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<NetlifyUser | null>(null);
+  const [user, setUser] = useState<GoTrueUser | null>(null);
   const [dbUser, setDbUser] = useState<DbUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<AuthMode>("login");
+  const [pendingRecoveryUser, setPendingRecoveryUser] = useState<GoTrueUser | null>(null);
 
   const fetchDbUser = useCallback(async () => {
     try {
@@ -48,45 +57,87 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Обработка токенов из URL (recovery, confirmation)
   useEffect(() => {
-    initAuth();
+    const handleAuthToken = async () => {
+      const authData = parseAuthHash();
+      if (!authData) return;
 
-    // Set initial user
+      try {
+        if (authData.type === "recovery") {
+          // Восстановление пароля - авторизуем пользователя с токеном
+          const recoveredUser = await recoverWithToken(authData.token);
+          setPendingRecoveryUser(recoveredUser);
+          setModalMode("reset-password");
+          setIsModalOpen(true);
+          clearAuthHash();
+        } else if (authData.type === "confirmation") {
+          // Подтверждение email - авторизуем пользователя
+          const confirmedUser = await confirmEmail(authData.token);
+          setUser(confirmedUser);
+          await fetchDbUser();
+          clearAuthHash();
+        }
+      } catch (error) {
+        console.error("Failed to process auth token:", error);
+        clearAuthHash();
+      }
+    };
+
+    handleAuthToken();
+  }, [fetchDbUser]);
+
+  useEffect(() => {
     const currentUser = getCurrentUser();
     setUser(currentUser);
 
     if (currentUser) {
-      fetchDbUser();
-    }
-
-    // Listen for auth changes
-    const unsubscribe = onAuthChange(async (netlifyUser) => {
-      setUser(netlifyUser);
-
-      if (netlifyUser) {
-        await fetchDbUser();
-      } else {
-        setDbUser(null);
-      }
-
-      setIsLoading(false);
-    });
-
-    // If no user, stop loading
-    if (!currentUser) {
+      fetchDbUser().finally(() => setIsLoading(false));
+    } else {
       setIsLoading(false);
     }
-
-    return unsubscribe;
   }, [fetchDbUser]);
 
-  const login = useCallback(() => {
-    authLogin();
+  const openLogin = useCallback(() => {
+    setModalMode("login");
+    setIsModalOpen(true);
   }, []);
 
-  const logout = useCallback(() => {
-    authLogout();
+  const handleLogin = useCallback(async (email: string, password: string) => {
+    const loggedInUser = await authLogin(email, password);
+    setUser(loggedInUser);
+    await fetchDbUser();
+  }, [fetchDbUser]);
+
+  const handleSignup = useCallback(async (email: string, password: string) => {
+    await authSignup(email, password);
+  }, []);
+
+  const handleRecovery = useCallback(async (email: string) => {
+    await requestPasswordRecovery(email);
+  }, []);
+
+  const handleResetPassword = useCallback(async (newPassword: string) => {
+    await updatePassword(newPassword);
+    // После смены пароля обновляем состояние пользователя
+    const currentUser = getCurrentUser();
+    if (currentUser) {
+      setUser(currentUser);
+      await fetchDbUser();
+    }
+    setPendingRecoveryUser(null);
+  }, [fetchDbUser]);
+
+  const logout = useCallback(async () => {
+    await authLogout();
+    setUser(null);
     setDbUser(null);
+  }, []);
+
+  const closeModal = useCallback(() => {
+    setIsModalOpen(false);
+    setPendingRecoveryUser(null);
+    setModalMode("login");
   }, []);
 
   const value: AuthContextType = {
@@ -95,13 +146,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading,
     isAuthenticated: !!user && !!dbUser,
     isAdmin: dbUser?.role === "admin",
-    login,
+    login: openLogin,
     logout,
   };
 
   return (
     <AuthContext.Provider value={value}>
       {children}
+      <AuthModal
+        isOpen={isModalOpen}
+        initialMode={modalMode}
+        onClose={closeModal}
+        onLogin={handleLogin}
+        onSignup={handleSignup}
+        onRecovery={handleRecovery}
+        onResetPassword={handleResetPassword}
+      />
     </AuthContext.Provider>
   );
 }
